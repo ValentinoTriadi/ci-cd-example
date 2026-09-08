@@ -37,12 +37,12 @@ jobs:
     name: Image
     needs: ci
     uses: ./.github/workflows/_reusable-docker.yml
+    # Nothing is pushed and nothing is uploaded, so read-only is enough.
     permissions:
       contents: read
-      packages: read
-      security-events: write
     with:
       push: false
+      upload-scan: false
       platforms: linux/amd64 # single platform so the image can be loaded and run
       tags: |
         type=raw,value=pr-${{ github.event.pull_request.number }}
