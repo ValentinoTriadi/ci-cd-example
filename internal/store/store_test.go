@@ -121,6 +121,28 @@ func TestGetAndDelete(t *testing.T) {
 	}
 }
 
+func TestSnapshot(t *testing.T) {
+	s := New()
+
+	if got := s.Snapshot(); got != (Stats{}) {
+		t.Errorf("Snapshot() on an empty store = %+v, want zero", got)
+	}
+
+	for _, title := range []string{"a", "b", "c"} {
+		if _, err := s.Create(title); err != nil {
+			t.Fatalf("Create(%q) error = %v", title, err)
+		}
+	}
+	if _, err := s.Update(2, "b", true); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	want := Stats{Total: 3, Done: 1, Pending: 2}
+	if got := s.Snapshot(); got != want {
+		t.Errorf("Snapshot() = %+v, want %+v", got, want)
+	}
+}
+
 // TestConcurrentAccess is the reason CI runs with -race: it hammers the store
 // from many goroutines at once. Remove the mutex in store.go and this fails.
 func TestConcurrentAccess(t *testing.T) {

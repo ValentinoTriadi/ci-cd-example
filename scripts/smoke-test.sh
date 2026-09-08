@@ -47,6 +47,10 @@ LISTED="$(curl -fsS --max-time 5 "${BASE_URL}/api/todos")"
 grep -q '"smoke test"' <<<"$LISTED" || fail "GET /api/todos did not return the new todo: ${LISTED}"
 echo "  ✓ GET /api/todos returns it"
 
+STATS="$(curl -fsS --max-time 5 "${BASE_URL}/api/todos/stats")"
+grep -q '"total":1' <<<"$STATS" || fail "GET /api/todos/stats did not count the new todo: ${STATS}"
+echo "  ✓ GET /api/todos/stats -> ${STATS}"
+
 # 5. A bad request must still be rejected correctly.
 STATUS="$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "${BASE_URL}/api/todos/999")"
 [[ "$STATUS" == "404" ]] || fail "expected 404 for a missing todo, got ${STATUS}"

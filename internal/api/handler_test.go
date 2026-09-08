@@ -152,6 +152,35 @@ func TestTodoLifecycle(t *testing.T) {
 	}
 }
 
+// TestStatsEndpoint also pins the routing precedence: /api/todos/stats must
+// win over /api/todos/{id} rather than being parsed as an id of "stats".
+func TestStatsEndpoint(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	rec := do(t, srv, http.MethodGet, "/api/todos/stats", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if got := decodeBody[store.Stats](t, rec); got != (store.Stats{}) {
+		t.Errorf("stats on an empty store = %+v, want zero", got)
+	}
+
+	for _, body := range []string{`{"title":"one"}`, `{"title":"two"}`} {
+		if seeded := do(t, srv, http.MethodPost, "/api/todos", body); seeded.Code != http.StatusCreated {
+			t.Fatalf("seeding failed with status %d", seeded.Code)
+		}
+	}
+	if marked := do(t, srv, http.MethodPut, "/api/todos/1", `{"title":"one","done":true}`); marked.Code != http.StatusOK {
+		t.Fatalf("marking done failed with status %d", marked.Code)
+	}
+
+	rec = do(t, srv, http.MethodGet, "/api/todos/stats", "")
+	want := store.Stats{Total: 2, Done: 1, Pending: 1}
+	if got := decodeBody[store.Stats](t, rec); got != want {
+		t.Errorf("stats = %+v, want %+v", got, want)
+	}
+}
+
 func TestRequestValidation(t *testing.T) {
 	srv, _ := newTestServer(t)
 
