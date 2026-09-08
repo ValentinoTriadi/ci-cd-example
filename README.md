@@ -290,6 +290,17 @@ matrix legs are billed at 10×.
   workflow inherits its permissions rather than declaring them.
 - **A skipped matrix job shows its raw name.** `Fast checks / Build (${{ matrix.goos }}/…)` in the
   checks list is GitHub rendering a job it never expanded, not a templating bug.
+- **Artifact storage is a finite account-wide quota.** When it fills, uploads fail with
+  `Failed to FinalizeArtifact: (403) Forbidden` *after* the content uploads successfully, which reads
+  like a permissions bug rather than a full disk. Six binaries per run at ~2.5 MB each fills 500 MB
+  quickly, so retention here is 3 days for binaries and 5 for coverage, and binaries upload only when
+  a caller asks for them. Clear a backlog with:
+
+  ```bash
+  for id in $(gh api repos/:owner/:repo/actions/artifacts --paginate --jq '.artifacts[].id'); do
+    gh api -X DELETE "repos/:owner/:repo/actions/artifacts/$id"
+  done
+  ```
 - **Actions are pinned to major tags here for readability.** `aquasecurity/trivy-action` publishes
   `v`-prefixed tags (`v0.36.0`); getting that wrong fails the run at startup with `unable to resolve
   action`, before any step executes.

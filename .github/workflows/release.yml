@@ -127,7 +127,9 @@ jobs:
         with:
           name: release-archives
           path: dist/*
-          retention-days: 30
+          # Only a handoff to the publish job — the durable copies are the
+          # assets attached to the GitHub Release itself.
+          retention-days: 5
           if-no-files-found: error
 
   image:
