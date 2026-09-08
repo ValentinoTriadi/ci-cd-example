@@ -28,6 +28,13 @@ on:
         description: Short commit SHA to stamp into the binary.
         type: string
         required: true
+      upload-scan:
+        description: >
+          Upload the Trivy report to code scanning. Requires the caller to
+          grant security-events: write, so pull-request builds leave it off and
+          print a table to the log instead.
+        type: boolean
+        default: true
     outputs:
       image:
         description: Fully qualified image reference, pinned to the digest.
@@ -47,10 +54,11 @@ jobs:
   build:
     name: Build image
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write # push to GHCR
-      security-events: write # upload the Trivy SARIF report
+    # Permissions are deliberately NOT declared here: a called workflow may not
+    # request more than its caller granted, and a job with no `permissions` key
+    # inherits the caller's. That lets the pull-request caller grant read-only
+    # while the CD callers grant packages: write + security-events: write, from
+    # this one definition.
     outputs:
       image: ${{ steps.reference.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
@@ -151,17 +159,18 @@ jobs:
           ./scripts/smoke-test.sh http://127.0.0.1:8080
 
       - name: Scan the image for vulnerabilities
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ steps.reference.outputs.image }}
-          format: sarif
-          output: trivy-results.sarif
+          # A table goes to the log; SARIF goes to the Security tab.
+          format: ${{ inputs.upload-scan && 'sarif' || 'table' }}
+          output: ${{ inputs.upload-scan && 'trivy-results.sarif' || '' }}
           severity: CRITICAL,HIGH
           # Report, do not block: a base-image CVE should not wedge every deploy.
           exit-code: "0"
 
       - name: Upload the scan report to code scanning
-        if: always() && hashFiles('trivy-results.sarif') != ''
+        if: always() && inputs.upload-scan && hashFiles('trivy-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-results.sarif
