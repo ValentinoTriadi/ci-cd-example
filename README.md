@@ -121,6 +121,7 @@ A single Go binary with no third-party dependencies.
 | `GET /healthz` | Liveness. 200 until the process dies. |
 | `GET /readyz` | Readiness. Flips to 503 the moment a shutdown signal arrives, so a load balancer drains before the listener closes. |
 | `GET /version` | Build metadata injected via `-ldflags`. The release workflow asserts this matches the git tag. |
+| `GET /api/todos/stats` | Aggregate counts (total / done / pending), taken under a single lock. |
 | `GET/POST /api/todos`, `GET/PUT/DELETE /api/todos/{id}` | An in-memory CRUD resource, so the smoke test exercises a real write path. |
 
 ```

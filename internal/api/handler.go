@@ -82,6 +82,10 @@ func (h *Handler) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, version.Get())
 }
 
+func (h *Handler) handleStats(w http.ResponseWriter, _ *http.Request) {
+	h.writeJSON(w, http.StatusOK, h.store.Snapshot())
+}
+
 func (h *Handler) handleListTodos(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.store.List())
 }
