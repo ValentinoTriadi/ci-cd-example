@@ -3,7 +3,7 @@
 # ---------- build stage ----------
 # BUILDPLATFORM keeps the compile native even when cross-building for another
 # architecture, which is much faster than emulating the toolchain under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS build
 
 # Injected by docker/build-push-action for each --platform entry.
 ARG TARGETOS
