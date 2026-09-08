@@ -1,0 +1,70 @@
+# Everything a change must pass before it can be merged.
+#
+# Runs the full CI matrix, then proves the container image still builds and
+# starts — without pushing anything to the registry.
+name: Pull request
+
+on:
+  pull_request:
+    branches: [develop, staging, main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  # Keep checks running in a merge queue, if one is enabled on the repo.
+  merge_group:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Draft PRs get nothing but the title check, to save runner minutes.
+  ci:
+    name: CI
+    if: github.event.pull_request.draft != true
+    uses: ./.github/workflows/_reusable-ci.yml
+    with:
+      go-versions: '["1.25.x", "1.26.x"]'
+      os-list: '["ubuntu-latest", "macos-latest"]'
+      run-build: true
+      upload-artifacts: true
+      coverage-min: 80
+
+  # Build the image but do not publish it: a Dockerfile that no longer builds
+  # should fail the PR, not be discovered after merge.
+  image:
+    name: Image
+    needs: ci
+    uses: ./.github/workflows/_reusable-docker.yml
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    with:
+      push: false
+      platforms: linux/amd64 # single platform so the image can be loaded and run
+      tags: |
+        type=raw,value=pr-${{ github.event.pull_request.number }}
+      version: ${{ needs.ci.outputs.version }}
+      commit: ${{ needs.ci.outputs.commit }}
+
+  # A single job the branch protection rule can point at.
+  pr-ready:
+    name: PR ready to merge
+    if: always()
+    needs: [ci, image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: ${RESULTS}"
+          for result in $RESULTS; do
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
+              echo "::error::pull request checks did not pass (${RESULTS})"
+              exit 1
+            fi
+          done
+          echo "### ✅ All pull request checks passed" >>"$GITHUB_STEP_SUMMARY"

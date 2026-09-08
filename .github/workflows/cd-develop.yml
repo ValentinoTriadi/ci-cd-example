@@ -1,0 +1,58 @@
+# develop → the development environment, automatically.
+#
+# This is the first branch where an image is actually published, so it is the
+# first place a broken Dockerfile has consequences.
+name: CD · develop
+
+on:
+  push:
+    branches: [develop]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-develop
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/_reusable-ci.yml
+    with:
+      go-versions: '["1.25.x", "1.26.x"]'
+      run-build: true
+      upload-artifacts: false
+
+  image:
+    name: Publish image
+    needs: ci
+    uses: ./.github/workflows/_reusable-docker.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    with:
+      push: true
+      tags: |
+        type=raw,value=develop
+        type=sha,prefix=sha-,format=short
+      version: ${{ needs.ci.outputs.version }}
+      commit: ${{ needs.ci.outputs.commit }}
+
+  deploy:
+    name: Deploy
+    needs: [ci, image]
+    uses: ./.github/workflows/_reusable-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+      deployments: write
+    with:
+      environment: development
+      image: ${{ needs.image.outputs.image }}
+      url: https://dev.example.internal

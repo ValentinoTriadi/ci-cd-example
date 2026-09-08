@@ -1,0 +1,60 @@
+# staging → the staging environment, automatically.
+#
+# Same shape as the develop pipeline; the difference is the environment it
+# targets and the image tag it publishes, which is the point of the reusable
+# workflows.
+name: CD · staging
+
+on:
+  push:
+    branches: [staging]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-staging
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/_reusable-ci.yml
+    with:
+      go-versions: '["1.25.x", "1.26.x"]'
+      os-list: '["ubuntu-latest", "macos-latest"]'
+      run-build: true
+      upload-artifacts: true
+
+  image:
+    name: Publish image
+    needs: ci
+    uses: ./.github/workflows/_reusable-docker.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    with:
+      push: true
+      tags: |
+        type=raw,value=staging
+        type=sha,prefix=sha-,format=short
+      version: ${{ needs.ci.outputs.version }}
+      commit: ${{ needs.ci.outputs.commit }}
+
+  deploy:
+    name: Deploy
+    needs: [ci, image]
+    uses: ./.github/workflows/_reusable-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+      deployments: write
+    with:
+      environment: staging
+      image: ${{ needs.image.outputs.image }}
+      url: https://staging.example.internal

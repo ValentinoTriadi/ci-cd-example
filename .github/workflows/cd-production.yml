@@ -1,0 +1,62 @@
+# main → production, behind a manual approval gate.
+#
+# The gate is not in this file: it is the required-reviewer rule configured on
+# the `production` GitHub Environment. The run pauses at the deploy job until
+# a reviewer approves, and the image is already built and scanned by then.
+name: CD · production
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/_reusable-ci.yml
+    with:
+      go-versions: '["1.25.x", "1.26.x"]'
+      os-list: '["ubuntu-latest", "macos-latest"]'
+      run-build: true
+      upload-artifacts: true
+      coverage-min: 80
+
+  image:
+    name: Publish image
+    needs: ci
+    uses: ./.github/workflows/_reusable-docker.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    with:
+      push: true
+      tags: |
+        type=raw,value=main
+        type=raw,value=edge
+        type=sha,prefix=sha-,format=short
+      version: ${{ needs.ci.outputs.version }}
+      commit: ${{ needs.ci.outputs.commit }}
+
+  deploy:
+    name: Deploy
+    needs: [ci, image]
+    uses: ./.github/workflows/_reusable-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+      deployments: write
+    with:
+      environment: production
+      image: ${{ needs.image.outputs.image }}
+      url: https://app.example.com

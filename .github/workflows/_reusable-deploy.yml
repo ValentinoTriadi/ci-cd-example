@@ -1,0 +1,108 @@
+# Deploy a specific image to a specific environment.
+#
+# The deploy command itself is a stub (scripts/deploy.sh) — everything around
+# it is real: GitHub Environments, approval gates, deployment records, the
+# environment URL, concurrency, and a post-deploy smoke test.
+name: Reusable · Deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: Target GitHub Environment — development, staging or production.
+        type: string
+        required: true
+      image:
+        description: Image reference to deploy. Prefer an @sha256 digest.
+        type: string
+        required: true
+      url:
+        description: URL recorded on the GitHub deployment.
+        type: string
+        required: true
+      ref:
+        description: Git ref being deployed, for the deployment record.
+        type: string
+        default: ""
+    outputs:
+      url:
+        description: The URL the deployment was recorded against.
+        value: ${{ inputs.url }}
+
+permissions:
+  contents: read
+
+# Never cancel a deploy that is already applying: a half-applied rollout is
+# worse than a queued one. Contrast with the PR lane, which cancels freely.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read # pull the image from GHCR for the smoke test
+      deployments: write
+    # This is what makes the approval gate work: a required reviewer configured
+    # on the `production` environment pauses the run here until someone approves.
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.url }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Announce the deployment
+        run: |
+          echo "Deploying to ${{ inputs.environment }}"
+          echo "  image : ${{ inputs.image }}"
+          echo "  ref   : ${{ inputs.ref || github.sha }}"
+          echo "  actor : ${{ github.actor }}"
+
+      - name: Deploy
+        id: deploy
+        run: |
+          ./scripts/deploy.sh \
+            --env "${{ inputs.environment }}" \
+            --image "${{ inputs.image }}" \
+            --ref "${{ inputs.ref || github.sha }}"
+
+      # In a real pipeline this hits the deployed URL. Here the stub deployed
+      # nothing, so we verify the same image locally instead — which still
+      # catches "the artifact we were about to ship is broken".
+      # GHCR packages are private until you make them public, so the runner
+      # needs to authenticate before it can pull what we just published.
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Post-deploy smoke test
+        run: |
+          echo "::notice::Smoke-testing the deployed image locally (the deploy itself is simulated)"
+
+          docker pull "${{ inputs.image }}"
+          docker run -d --name deployed -p 8080:8080 "${{ inputs.image }}"
+          trap 'docker logs deployed || true; docker rm -f deployed || true' EXIT
+
+          ./scripts/smoke-test.sh http://127.0.0.1:8080
+
+      - name: Record the outcome
+        if: always()
+        run: |
+          status="✅ succeeded"
+          [[ "${{ job.status }}" != "success" ]] && status="❌ failed"
+          {
+            echo "### Deployment ${status}"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Environment | \`${{ inputs.environment }}\` |"
+            echo "| Image | \`${{ inputs.image }}\` |"
+            echo "| URL | ${{ inputs.url }} |"
+            echo "| Triggered by | @${{ github.actor }} |"
+          } >>"$GITHUB_STEP_SUMMARY"

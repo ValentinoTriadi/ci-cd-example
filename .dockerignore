@@ -1,0 +1,14 @@
+.git
+.github
+.golangci.yml
+.gitignore
+.editorconfig
+bin/
+dist/
+docs/
+scripts/
+coverage.out
+coverage.html
+Makefile
+README.md
+*.md

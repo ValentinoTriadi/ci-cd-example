@@ -1,0 +1,7 @@
+# Every change needs a review from the owner.
+*                       @ValentinoTriadi
+
+# Pipeline and deployment changes are the highest-risk edits in the repo.
+/.github/               @ValentinoTriadi
+/scripts/               @ValentinoTriadi
+/Dockerfile             @ValentinoTriadi

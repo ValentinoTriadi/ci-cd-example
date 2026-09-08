@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: GitHub Actions documentation
+    url: https://docs.github.com/en/actions
+    about: Reference for the workflow syntax used in this repository.

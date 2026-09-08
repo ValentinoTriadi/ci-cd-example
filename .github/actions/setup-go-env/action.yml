@@ -1,0 +1,56 @@
+name: Set up Go environment
+description: >
+  Installs Go, restores the module and build caches, and downloads and verifies
+  dependencies. Every Go job uses this so the toolchain is configured in exactly
+  one place.
+
+inputs:
+  go-version:
+    description: >
+      Go version to install. Leave empty to use the version declared in go.mod,
+      which is what most jobs want.
+    required: false
+    default: ""
+  cache-suffix:
+    description: >
+      Extra key material for the build cache, so unrelated jobs (a linux/arm64
+      cross-build vs. the test job) do not fight over one cache entry.
+    required: false
+    default: default
+
+outputs:
+  go-version:
+    description: The Go version that was actually installed.
+    value: ${{ steps.setup.outputs.go-version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install Go
+      id: setup
+      uses: actions/setup-go@v7
+      with:
+        # An empty go-version falls through to go-version-file.
+        go-version: ${{ inputs.go-version }}
+        go-version-file: go.mod
+        # Cache is handled below so the key can include the matrix leg.
+        cache: false
+
+    - name: Restore Go caches
+      uses: actions/cache@v6
+      with:
+        path: |
+          ~/.cache/go-build
+          ~/Library/Caches/go-build
+          ~/go/pkg/mod
+        key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup.outputs.go-version }}-${{ inputs.cache-suffix }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+        restore-keys: |
+          go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup.outputs.go-version }}-${{ inputs.cache-suffix }}-
+          go-${{ runner.os }}-${{ runner.arch }}-${{ steps.setup.outputs.go-version }}-
+
+    - name: Download and verify modules
+      shell: bash
+      run: |
+        go mod download
+        go mod verify
+        echo "Using $(go version)"

@@ -1,0 +1,148 @@
+# Scheduled full-surface run.
+#
+# CI on a PR is tuned for speed. This is tuned for coverage: every supported Go
+# version and OS, plus checks that only make sense against code nobody touched
+# today (new advisories, a base image that has drifted, module updates).
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  full-matrix:
+    name: Full matrix
+    uses: ./.github/workflows/_reusable-ci.yml
+    with:
+      go-versions: '["1.25.x", "1.26.x"]'
+      os-list: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+      run-build: true
+      upload-artifacts: false
+      coverage-min: 80
+
+  # Run the suite repeatedly to surface tests that only fail sometimes. Flaky
+  # tests are much cheaper to find here than in a release run.
+  flake-hunt:
+    name: Flake hunt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: flake
+
+      - name: Run the suite 10 times
+        run: go test ./... -race -count=10 -timeout 20m
+
+  # A dependency bump that nobody has merged yet still matters if it patches a
+  # vulnerability you are exposed to today.
+  drift:
+    name: Dependency drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: drift
+
+      - name: go.mod is still tidy
+        run: make tidy-check
+
+      - name: Report available updates
+        run: |
+          echo "### Available module updates" >>"$GITHUB_STEP_SUMMARY"
+          echo '```' >>"$GITHUB_STEP_SUMMARY"
+          go list -u -m all 2>/dev/null | grep '\[' >>"$GITHUB_STEP_SUMMARY" || \
+            echo "all dependencies up to date" >>"$GITHUB_STEP_SUMMARY"
+          echo '```' >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # The published image ages even when the code does not: base-image CVEs
+  # appear days after a release.
+  scan-published-image:
+    name: Scan published image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve the image
+        id: image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:main"
+          echo "image=${image}" >>"$GITHUB_OUTPUT"
+          if docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo "exists=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::${image} has not been published yet; skipping the scan"
+            echo "exists=false" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Scan with Trivy
+        if: steps.image.outputs.exists == 'true'
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: ${{ steps.image.outputs.image }}
+          format: sarif
+          output: trivy-nightly.sarif
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+
+      - name: Upload the scan report
+        if: steps.image.outputs.exists == 'true' && hashFiles('trivy-nightly.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-nightly.sarif
+          category: trivy-nightly
+
+  report:
+    name: Nightly report
+    if: always()
+    needs: [full-matrix, flake-hunt, drift, scan-published-image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarise
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          {
+            echo "### 🌙 Nightly results"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| Full matrix | ${{ needs.full-matrix.result }} |"
+            echo "| Flake hunt | ${{ needs.flake-hunt.result }} |"
+            echo "| Dependency drift | ${{ needs.drift.result }} |"
+            echo "| Image scan | ${{ needs.scan-published-image.result }} |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+          for result in $RESULTS; do
+            if [[ "$result" == "failure" ]]; then
+              echo "::error::nightly run failed (${RESULTS})"
+              exit 1
+            fi
+          done

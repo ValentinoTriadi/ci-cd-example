@@ -1,0 +1,52 @@
+# golangci-lint v2 configuration.
+# Run locally with `make lint`; CI runs the identical config.
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  # "standard" = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - bodyclose      # HTTP response bodies must be closed
+    - errorlint      # use errors.Is/As instead of == and type asserts
+    - gocritic       # opinionated correctness + style checks
+    - gosec          # security-focused static analysis
+    - misspell       # typos in comments and strings
+    - nilerr         # returning nil when err is non-nil
+    - revive         # golint's successor: naming, exported docs, early returns
+    - unconvert      # redundant type conversions
+    - unparam        # unused function parameters
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gocritic:
+      enabled-tags: [diagnostic, style, performance]
+      disabled-checks: [whyNoLint]
+    govet:
+      enable-all: true
+      disable: [fieldalignment]  # readability beats struct packing here
+    revive:
+      rules:
+        - name: exported
+        - name: early-return
+        - name: unused-parameter
+
+  exclusions:
+    generated: lax
+    rules:
+      # Test files get more latitude: unchecked errors and hardcoded
+      # credentials-shaped strings are normal there.
+      - path: _test\.go
+        linters: [gosec, errcheck, unparam]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/ValentinoTriadi/ci-cd-example]
