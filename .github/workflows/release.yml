@@ -46,7 +46,9 @@ jobs:
 
           # Releases must come from a commit that is on main. This is what stops
           # someone tagging a feature branch and shipping it to production.
-          git fetch --no-tags origin main:refs/remotes/origin/main
+          # --force because checkout may already have created origin/main at an
+          # older commit; without it the fetch fails instead of updating.
+          git fetch --no-tags --force origin main:refs/remotes/origin/main
           if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
             echo "::error::${version} points at a commit that is not on main"
             exit 1

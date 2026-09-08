@@ -69,11 +69,8 @@ jobs:
             --image "${{ inputs.image }}" \
             --ref "${{ inputs.ref || github.sha }}"
 
-      # In a real pipeline this hits the deployed URL. Here the stub deployed
-      # nothing, so we verify the same image locally instead — which still
-      # catches "the artifact we were about to ship is broken".
-      # GHCR packages are private until you make them public, so the runner
-      # needs to authenticate before it can pull what we just published.
+      # A GHCR package is private until you make it public, so the runner
+      # authenticates before pulling what the image job just published.
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -81,6 +78,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # In a real pipeline this hits the deployed URL. Here the stub deployed
+      # nothing, so we run the very same image locally instead — which still
+      # catches "the artifact we were about to ship is broken".
       - name: Post-deploy smoke test
         run: |
           echo "::notice::Smoke-testing the deployed image locally (the deploy itself is simulated)"
