@@ -130,6 +130,30 @@ func (s *Store) Delete(id int64) error {
 	return nil
 }
 
+// Stats is an aggregate view of the collection.
+type Stats struct {
+	Total   int `json:"total"`
+	Done    int `json:"done"`
+	Pending int `json:"pending"`
+}
+
+// Snapshot returns the current counts in a single lock acquisition, so the
+// three numbers are always consistent with each other.
+func (s *Store) Snapshot() Stats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := Stats{Total: len(s.items)}
+	for _, todo := range s.items {
+		if todo.Done {
+			stats.Done++
+		}
+	}
+	stats.Pending = stats.Total - stats.Done
+
+	return stats
+}
+
 // Len reports how many todos are stored.
 func (s *Store) Len() int {
 	s.mu.RLock()
