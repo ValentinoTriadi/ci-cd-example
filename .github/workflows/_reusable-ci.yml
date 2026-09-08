@@ -1,0 +1,278 @@
+# Core quality pipeline: format → lint → test → build.
+#
+# This workflow is never triggered directly. Every entry point (PR checks, the
+# feature-branch fast lane, each CD workflow, the release workflow) calls it
+# with different inputs, so there is exactly one definition of "CI passed".
+name: Reusable · CI
+
+on:
+  workflow_call:
+    inputs:
+      go-versions:
+        description: JSON array of Go versions to test against.
+        type: string
+        default: '["1.25.x"]'
+      os-list:
+        description: JSON array of runner labels to test on.
+        type: string
+        default: '["ubuntu-latest"]'
+      run-lint:
+        description: Run golangci-lint. Disabled on the nightly matrix, which only cares about tests.
+        type: boolean
+        default: true
+      run-build:
+        description: Cross-compile the binary for every release platform.
+        type: boolean
+        default: true
+      upload-artifacts:
+        description: Upload the cross-compiled binaries as workflow artifacts.
+        type: boolean
+        default: false
+      coverage-min:
+        description: Minimum total statement coverage, as a percentage.
+        type: number
+        default: 80
+    outputs:
+      version:
+        description: The version string stamped into the binaries.
+        value: ${{ jobs.meta.outputs.version }}
+      commit:
+        description: The short commit SHA that was built.
+        value: ${{ jobs.meta.outputs.commit }}
+
+# Least privilege by default; individual jobs escalate only if they must.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Derive the build metadata once, so every job stamps identical values.
+  # ---------------------------------------------------------------------------
+  meta:
+    name: Build metadata
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      commit: ${{ steps.meta.outputs.commit }}
+      build-date: ${{ steps.meta.outputs.build-date }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # git describe needs the full tag history
+
+      - name: Derive version, commit and build date
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-${GITHUB_SHA::7}")"
+          fi
+
+          {
+            echo "version=${version}"
+            echo "commit=${GITHUB_SHA::7}"
+            echo "build-date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >>"$GITHUB_OUTPUT"
+
+          {
+            echo "### Build metadata"
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Version | \`${version}\` |"
+            echo "| Commit | \`${GITHUB_SHA::7}\` |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  # ---------------------------------------------------------------------------
+  # Cheapest checks first: they fail in under a minute and need no matrix.
+  # ---------------------------------------------------------------------------
+  format:
+    name: Format & vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: format
+
+      - name: gofmt
+        run: make fmt-check
+
+      - name: go vet
+        run: make vet
+
+      - name: go.mod is tidy
+        run: make tidy-check
+
+  lint:
+    name: Lint
+    if: inputs.run-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: lint
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.13.2
+          args: --timeout 5m
+
+  # ---------------------------------------------------------------------------
+  # The matrix. `go-versions` × `os-list` is small for PRs and wide nightly.
+  # ---------------------------------------------------------------------------
+  test:
+    name: Test (Go ${{ matrix.go }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # one failing leg should not hide the others
+      matrix:
+        go: ${{ fromJSON(inputs.go-versions) }}
+        os: ${{ fromJSON(inputs.os-list) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          go-version: ${{ matrix.go }}
+          cache-suffix: test
+
+      # -json is captured for the summary step; jq turns it back into the
+      # human-readable stream so the live log stays readable. pipefail keeps
+      # go test's exit code authoritative.
+      - name: Run tests with the race detector
+        run: |
+          set -o pipefail
+          go test ./... -race -covermode=atomic -coverprofile=coverage.out -json |
+            tee test-output.json |
+            jq -j 'select(.Action == "output") | .Output'
+
+      - name: Publish test summary
+        if: always()
+        run: ./scripts/test-summary.sh test-output.json "Tests · Go ${{ matrix.go }} · ${{ matrix.os }}"
+
+      # The coverage gate runs once, on the primary matrix leg, so a 1% drift
+      # does not fail six jobs with the same message.
+      - name: Enforce coverage threshold
+        if: matrix.os == 'ubuntu-latest' && matrix.go == fromJSON(inputs.go-versions)[0]
+        env:
+          COVERAGE_MIN: ${{ inputs.coverage-min }}
+        run: ./scripts/coverage.sh coverage.out
+
+      - name: Render HTML coverage report
+        if: matrix.os == 'ubuntu-latest' && matrix.go == fromJSON(inputs.go-versions)[0]
+        run: go tool cover -html=coverage.out -o coverage.html
+
+      - name: Upload coverage report
+        if: always() && matrix.os == 'ubuntu-latest' && matrix.go == fromJSON(inputs.go-versions)[0]
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-report
+          path: |
+            coverage.out
+            coverage.html
+          retention-days: 14
+          if-no-files-found: warn
+
+  # ---------------------------------------------------------------------------
+  # Prove the code cross-compiles everywhere we publish, and archive the result.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+    if: inputs.run-build
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: build-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Cross-compile
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+          BUILD_DATE: ${{ needs.meta.outputs['build-date'] }}
+        run: |
+          mkdir -p bin
+          binary="bin/server-${GOOS}-${GOARCH}"
+          [[ "$GOOS" == "windows" ]] && binary="${binary}.exe"
+
+          pkg="github.com/ValentinoTriadi/ci-cd-example/internal/version"
+          go build -trimpath \
+            -ldflags="-s -w -X ${pkg}.Version=${VERSION} -X ${pkg}.Commit=${COMMIT} -X ${pkg}.BuildDate=${BUILD_DATE}" \
+            -o "$binary" ./cmd/server
+
+          ls -lh "$binary"
+          echo "- \`${binary}\` ($(du -h "$binary" | cut -f1))" >>"$GITHUB_STEP_SUMMARY"
+
+      # A cross-compiled binary that cannot start is still broken. Only the
+      # native leg can actually be executed here.
+      - name: Verify the native binary reports its version
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          chmod +x bin/server-linux-amd64
+          ADDR=127.0.0.1:8080 ./bin/server-linux-amd64 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ./scripts/smoke-test.sh http://127.0.0.1:8080
+
+          reported="$(curl -fsS http://127.0.0.1:8080/version | jq -r .version)"
+          expected="${{ needs.meta.outputs.version }}"
+          if [[ "$reported" != "$expected" ]]; then
+            echo "::error::binary reports version '${reported}', expected '${expected}'"
+            exit 1
+          fi
+          echo "Binary correctly reports version ${reported}"
+
+      - name: Upload binary
+        if: inputs.upload-artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: bin/server-*
+          retention-days: 7
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # One job to require in branch protection. Adding a job above never means
+  # editing the repo's protection rules.
+  # ---------------------------------------------------------------------------
+  ci-ok:
+    name: CI gate
+    if: always()
+    needs: [format, lint, test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check upstream job results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Upstream results: ${RESULTS}"
+          # "skipped" is fine — inputs can legitimately disable lint or build.
+          for result in $RESULTS; do
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
+              echo "::error::a required CI job did not pass (${RESULTS})"
+              exit 1
+            fi
+          done
+          echo "### ✅ CI gate passed" >>"$GITHUB_STEP_SUMMARY"

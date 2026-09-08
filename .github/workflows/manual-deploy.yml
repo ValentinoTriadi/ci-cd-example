@@ -1,0 +1,119 @@
+# Deploy any published image to any environment, on demand.
+#
+# This is the rollback path: pick a previously published tag or digest and
+# redeploy it, without reverting a commit first.
+name: Manual deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        type: choice
+        required: true
+        default: staging
+        options: [development, staging, production]
+      image-tag:
+        description: Image tag or @sha256 digest to deploy (e.g. v1.2.0, staging, sha-a1b2c3d)
+        type: string
+        required: true
+      dry-run:
+        description: Print the plan without deploying
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  # Deploying a tag that does not exist should fail before the approval gate,
+  # not after someone has approved it.
+  resolve:
+    name: Resolve image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+      url: ${{ steps.resolve.outputs.url }}
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve and verify
+        id: resolve
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          tag="${{ inputs.image-tag }}"
+
+          # Accept either a tag or a digest.
+          if [[ "$tag" == sha256:* ]]; then
+            image="${repo}@${tag}"
+          else
+            image="${repo}:${tag}"
+          fi
+
+          if ! docker manifest inspect "$image" >/dev/null 2>&1; then
+            echo "::error::${image} does not exist in the registry"
+            exit 1
+          fi
+
+          case "${{ inputs.environment }}" in
+            development) url="https://dev.example.internal" ;;
+            staging)     url="https://staging.example.internal" ;;
+            production)  url="https://app.example.com" ;;
+          esac
+
+          {
+            echo "image=${image}"
+            echo "url=${url}"
+          } >>"$GITHUB_OUTPUT"
+
+          {
+            echo "### Manual deploy requested"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Environment | \`${{ inputs.environment }}\` |"
+            echo "| Image | \`${image}\` |"
+            echo "| Dry run | \`${{ inputs.dry-run }}\` |"
+            echo "| Requested by | @${{ github.actor }} |"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  dry-run:
+    name: Dry run
+    if: inputs.dry-run
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Print the deployment plan
+        run: |
+          ./scripts/deploy.sh \
+            --env "${{ inputs.environment }}" \
+            --image "${{ needs.resolve.outputs.image }}" \
+            --dry-run
+
+  deploy:
+    name: Deploy
+    if: ${{ !inputs.dry-run }}
+    needs: resolve
+    uses: ./.github/workflows/_reusable-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+      deployments: write
+    with:
+      environment: ${{ inputs.environment }}
+      image: ${{ needs.resolve.outputs.image }}
+      url: ${{ needs.resolve.outputs.url }}

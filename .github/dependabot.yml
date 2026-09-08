@@ -1,0 +1,45 @@
+version: 2
+
+updates:
+  # Go modules.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: [dependencies, go]
+    commit-message:
+      prefix: "chore(deps)"
+    # Patch bumps are noise if they arrive one PR at a time.
+    groups:
+      go-patch:
+        update-types: [patch]
+
+  # The actions used by the workflows themselves — the most commonly forgotten
+  # ecosystem, and the one with the largest supply-chain blast radius.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    open-pull-requests-limit: 5
+    labels: [dependencies, ci]
+    commit-message:
+      prefix: "ci(deps)"
+    groups:
+      actions-minor:
+        update-types: [minor, patch]
+
+  # Base image updates for the Dockerfile.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    labels: [dependencies, docker]
+    commit-message:
+      prefix: "build(deps)"

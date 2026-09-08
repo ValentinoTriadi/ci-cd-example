@@ -1,0 +1,210 @@
+# Checks about the change rather than the code's behaviour: security scanning,
+# dependency review, secret detection, and commit/PR hygiene.
+#
+# Kept separate from CI so a CodeQL run (minutes) never gates the fast lint
+# feedback, and so the schedule can re-scan unchanged code for new advisories.
+name: Code quality
+
+on:
+  pull_request:
+    branches: [develop, staging, main]
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main, staging, develop]
+  schedule:
+    - cron: "0 4 * * 1" # Mondays 04:00 UTC — catches advisories in untouched code
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Hygiene: cheap, PR-only, and the most likely thing to need fixing.
+  # ---------------------------------------------------------------------------
+  pr-title:
+    name: Conventional PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      # The PR title becomes the squash-merge commit message, so it is the
+      # thing that has to be conventional — not every WIP commit.
+      - uses: amannn/action-semantic-pull-request@v6
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert
+          requireScope: false
+          subjectPattern: ^(?![A-Z])(?!.*\.$).+$
+          subjectPatternError: |
+            The subject "{subject}" must start lowercase and must not end with a period.
+
+  commit-messages:
+    name: Commit messages
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # A warning, not a failure: the PR title is what gets enforced.
+      - name: Report non-conventional commits
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: .+'
+
+          nonconforming=0
+          while IFS= read -r subject; do
+            [[ -z "$subject" ]] && continue
+            if [[ ! "$subject" =~ $pattern ]]; then
+              echo "::warning::non-conventional commit subject: ${subject}"
+              nonconforming=$((nonconforming + 1))
+            fi
+          done < <(git log --pretty=%s "${base}..${head}")
+
+          echo "### Commit messages" >>"$GITHUB_STEP_SUMMARY"
+          if ((nonconforming == 0)); then
+            echo "✅ every commit subject follows Conventional Commits" >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "⚠️ ${nonconforming} commit(s) do not follow Conventional Commits (squash-merge will use the PR title)" >>"$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Security.
+  # ---------------------------------------------------------------------------
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: codeql
+
+      - name: Initialise CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          queries: security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyse
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:go
+
+  govulncheck:
+    name: Vulnerability check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: govulncheck
+
+      # govulncheck is call-graph aware: it only reports advisories in code the
+      # binary actually reaches, so a hit here is worth acting on.
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./... | tee govulncheck.txt
+
+      - name: Summarise
+        if: always()
+        run: |
+          echo "### govulncheck" >>"$GITHUB_STEP_SUMMARY"
+          echo '```' >>"$GITHUB_STEP_SUMMARY"
+          tail -30 govulncheck.txt >>"$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "no output" >>"$GITHUB_STEP_SUMMARY"
+          echo '```' >>"$GITHUB_STEP_SUMMARY"
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # gitleaks scans history, not just the diff
+
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # Blocks a PR that introduces a dependency with a known high-severity
+      # advisory or a licence you have not allowed.
+      - uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+          comment-summary-in-pr: on-failure
+          deny-licenses: AGPL-3.0, GPL-3.0
+
+  # ---------------------------------------------------------------------------
+  # The workflow files are code too.
+  # ---------------------------------------------------------------------------
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # actionlint catches expression typos, bad `needs` references and shell
+      # bugs inside `run:` blocks — mistakes that otherwise only surface when
+      # the workflow next fires.
+      - name: Run actionlint
+        run: |
+          docker run --rm -v "$PWD":/repo -w /repo rhysd/actionlint:latest -color
+
+  quality-ok:
+    name: Quality gate
+    if: always()
+    needs: [pr-title, commit-messages, codeql, govulncheck, secrets, dependency-review, actionlint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: ${RESULTS}"
+          for result in $RESULTS; do
+            if [[ "$result" == "failure" || "$result" == "cancelled" ]]; then
+              echo "::error::code quality checks did not pass (${RESULTS})"
+              exit 1
+            fi
+          done
+          echo "### ✅ Code quality checks passed" >>"$GITHUB_STEP_SUMMARY"

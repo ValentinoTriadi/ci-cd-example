@@ -1,0 +1,37 @@
+# Fast lane for work-in-progress branches.
+#
+# Feature branches get sub-two-minute feedback: format, vet, lint and tests on
+# one Go version. No cross-compilation, no image, no deploy — those come when
+# the branch is opened as a pull request.
+name: Feature branch
+
+on:
+  push:
+    branches:
+      - "feat/**"
+      - "feature/**"
+      - "fix/**"
+      - "chore/**"
+      - "refactor/**"
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".editorconfig"
+
+permissions:
+  contents: read
+
+# A newer push to the same branch makes the previous run irrelevant.
+concurrency:
+  group: feature-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fast-checks:
+    name: Fast checks
+    uses: ./.github/workflows/_reusable-ci.yml
+    with:
+      go-versions: '["1.25.x"]'
+      os-list: '["ubuntu-latest"]'
+      run-build: false # skip the six-platform matrix on WIP branches
+      upload-artifacts: false

@@ -1,0 +1,231 @@
+# Tag v* → a published GitHub Release and a production deployment.
+#
+# Ordering matters: nothing is published until CI passes, and nothing is
+# deployed until the release exists. Prereleases (v1.2.3-rc.1) are published
+# but never tagged `latest` and never deployed to production.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Refuse to release from a tag that should not have been pushed.
+  # ---------------------------------------------------------------------------
+  guard:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate the tag
+        id: check
+        run: |
+          version="${GITHUB_REF_NAME}"
+          echo "Tag: ${version}"
+
+          # Strict semver, with an optional prerelease and build suffix.
+          semver='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          if [[ ! "$version" =~ $semver ]]; then
+            echo "::error::'${version}' is not a valid semver tag (expected vMAJOR.MINOR.PATCH)"
+            exit 1
+          fi
+
+          # Releases must come from a commit that is on main. This is what stops
+          # someone tagging a feature branch and shipping it to production.
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::${version} points at a commit that is not on main"
+            exit 1
+          fi
+
+          prerelease=false
+          [[ "$version" == *-* ]] && prerelease=true
+
+          {
+            echo "version=${version}"
+            echo "prerelease=${prerelease}"
+          } >>"$GITHUB_OUTPUT"
+
+          {
+            echo "### 🏷️ Releasing ${version}"
+            echo ""
+            echo "- Prerelease: \`${prerelease}\`"
+            echo "- Commit: \`${GITHUB_SHA::7}\` (verified on main)"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  ci:
+    name: CI
+    needs: guard
+    uses: ./.github/workflows/_reusable-ci.yml
+    with:
+      go-versions: '["1.25.x", "1.26.x"]'
+      os-list: '["ubuntu-latest", "macos-latest"]'
+      run-build: false # the archives job below builds the real artifacts
+      coverage-min: 80
+
+  # ---------------------------------------------------------------------------
+  # The downloadable artifacts: one archive per platform plus checksums.
+  # ---------------------------------------------------------------------------
+  archives:
+    name: Build release archives
+    needs: [guard, ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-go-env
+        with:
+          cache-suffix: release
+
+      - name: Cross-compile and archive
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          COMMIT="${COMMIT::7}" ./scripts/build-release.sh
+
+      # The binary must report the tag it was built from. A mismatch means the
+      # ldflags wiring broke, and the release would ship a lying /version.
+      - name: Verify the stamped version matches the tag
+        run: |
+          tar -xzf "dist/server-${{ needs.guard.outputs.version }}-linux-amd64.tar.gz" -C /tmp
+          binary="/tmp/server-${{ needs.guard.outputs.version }}-linux-amd64/server"
+          chmod +x "$binary"
+
+          ADDR=127.0.0.1:8080 "$binary" &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          ./scripts/smoke-test.sh http://127.0.0.1:8080
+
+          reported="$(curl -fsS http://127.0.0.1:8080/version | jq -r .version)"
+          if [[ "$reported" != "${{ needs.guard.outputs.version }}" ]]; then
+            echo "::error::archive reports version '${reported}', expected '${{ needs.guard.outputs.version }}'"
+            exit 1
+          fi
+          echo "✓ archive reports ${reported}"
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-archives
+          path: dist/*
+          retention-days: 30
+          if-no-files-found: error
+
+  image:
+    name: Publish image
+    needs: [guard, ci]
+    uses: ./.github/workflows/_reusable-docker.yml
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    with:
+      push: true
+      # metadata-action reads the semver tag straight off the ref.
+      tags: |
+        type=semver,pattern={{version}}
+        type=semver,pattern={{major}}.{{minor}}
+        type=semver,pattern={{major}},enable=${{ needs.guard.outputs.prerelease == 'false' }}
+        type=raw,value=latest,enable=${{ needs.guard.outputs.prerelease == 'false' }}
+      version: ${{ needs.guard.outputs.version }}
+      commit: ${{ needs.ci.outputs.commit }}
+
+  # ---------------------------------------------------------------------------
+  # Publish the release itself.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: Publish GitHub Release
+    needs: [guard, archives, image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Download archives
+        uses: actions/download-artifact@v8
+        with:
+          name: release-archives
+          path: dist
+
+      - name: Build the changelog
+        id: changelog
+        run: |
+          previous="$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || true)"
+
+          {
+            echo "## What's changed"
+            echo ""
+            if [[ -n "$previous" ]]; then
+              git log --pretty='- %s (%h)' "${previous}..${GITHUB_REF_NAME}"
+            else
+              git log --pretty='- %s (%h)' "${GITHUB_REF_NAME}"
+            fi
+            echo ""
+            echo "## Container image"
+            echo ""
+            echo '```'
+            echo "docker pull ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME}"
+            echo '```'
+            echo ""
+            echo "## Checksums"
+            echo ""
+            echo '```'
+            cat dist/checksums.txt
+            echo '```'
+            if [[ -n "$previous" ]]; then
+              echo ""
+              echo "**Full diff**: https://github.com/${GITHUB_REPOSITORY}/compare/${previous}...${GITHUB_REF_NAME}"
+            fi
+          } >release-notes.md
+
+          cat release-notes.md >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v3
+        with:
+          name: ${{ needs.guard.outputs.version }}
+          body_path: release-notes.md
+          prerelease: ${{ needs.guard.outputs.prerelease == 'true' }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          fail_on_unmatched_files: true
+
+  # ---------------------------------------------------------------------------
+  # Stable tags go to production, behind the same approval gate as main.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy
+    needs: [guard, image, publish]
+    if: needs.guard.outputs.prerelease == 'false'
+    uses: ./.github/workflows/_reusable-deploy.yml
+    permissions:
+      contents: read
+      packages: read
+      deployments: write
+    with:
+      environment: production
+      image: ${{ needs.image.outputs.image }}
+      url: https://app.example.com
+      ref: ${{ github.ref_name }}
