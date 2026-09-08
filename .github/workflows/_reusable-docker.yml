@@ -50,8 +50,16 @@ on:
         description: The image digest that was built.
         value: ${{ jobs.build.outputs.digest }}
 
-permissions:
-  contents: read
+# No `permissions:` block anywhere in this file — neither here nor on the job.
+# A workflow-level block would apply to every job and silently override what the
+# caller granted, which is exactly the bug it looks like it prevents: the job
+# would get `contents: read` even when the caller granted packages: write, and
+# the SARIF upload would fail with "Resource not accessible by integration"
+# while the image push still worked through GHCR_TOKEN.
+#
+# Leaving it out means each caller decides: pull requests grant `contents: read`
+# and pass upload-scan: false, the CD workflows grant packages: write and
+# security-events: write.
 
 env:
   REGISTRY: ghcr.io
@@ -61,11 +69,7 @@ jobs:
   build:
     name: Build image
     runs-on: ubuntu-latest
-    # Permissions are deliberately NOT declared here: a called workflow may not
-    # request more than its caller granted, and a job with no `permissions` key
-    # inherits the caller's. That lets the pull-request caller grant read-only
-    # while the CD callers grant packages: write + security-events: write, from
-    # this one definition.
+    # See the note above the `env:` block on why permissions are not declared.
     outputs:
       image: ${{ steps.reference.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}

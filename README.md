@@ -97,11 +97,15 @@ Four details worth copying:
   so a deploy can never pick up a different image than the one that was scanned.
 - **Asymmetric concurrency.** PR and feature runs use `cancel-in-progress: true`; deploys use
   `false`, because cancelling a half-applied rollout is worse than queueing.
-- **No `permissions:` block in `_reusable-docker.yml`.** A called workflow may not request more than
-  its caller granted, so declaring permissions in the callee forces *every* caller to match the most
-  privileged one. Omitting it lets the job inherit: pull requests grant `contents: read` and pass
-  `upload-scan: false`, while the CD callers grant `packages: write` and `security-events: write` —
-  one workflow definition, least privilege at each call site.
+- **No `permissions:` block anywhere in `_reusable-docker.yml`.** A called workflow may not request
+  more than its caller granted, so declaring permissions in the callee forces *every* caller to match
+  the most privileged one. Omitting them lets the job inherit: pull requests grant `contents: read`
+  and pass `upload-scan: false`, while the CD callers grant `packages: write` and
+  `security-events: write` — one workflow definition, least privilege at each call site.
+  **The workflow-level block counts too.** Leaving `permissions: contents: read` at the top of a
+  called workflow silently overrides what the caller granted, and the symptom is confusing: the image
+  push still succeeds through `GHCR_TOKEN` while the SARIF upload fails with
+  `Resource not accessible by integration`.
 
 ## Branching model
 
