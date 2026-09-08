@@ -36,6 +36,8 @@ jobs:
       contents: read
       packages: write
       security-events: write
+    secrets:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
     with:
       push: true
       tags: |
@@ -52,6 +54,8 @@ jobs:
       contents: read
       packages: read
       deployments: write
+    secrets:
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
     with:
       environment: development
       image: ${{ needs.image.outputs.image }}

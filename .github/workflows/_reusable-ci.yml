@@ -167,15 +167,18 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.go == fromJSON(inputs.go-versions)[0]
         run: go tool cover -html=coverage.out -o coverage.html
 
+      # Artifact storage is a shared, finite account quota — when it fills,
+      # uploads fail with a 403 on FinalizeArtifact and take unrelated jobs
+      # down with them. Keep retention short and upload only what gets read.
       - name: Upload coverage report
-        if: always() && matrix.os == 'ubuntu-latest' && matrix.go == fromJSON(inputs.go-versions)[0]
+        if: always() && inputs.upload-artifacts && matrix.os == 'ubuntu-latest' && matrix.go == fromJSON(inputs.go-versions)[0]
         uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: |
             coverage.out
             coverage.html
-          retention-days: 14
+          retention-days: 5
           if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
@@ -250,7 +253,9 @@ jobs:
         with:
           name: server-${{ matrix.goos }}-${{ matrix.goarch }}
           path: bin/server-*
-          retention-days: 7
+          # Six binaries per run at ~2.5 MB each adds up fast; a PR artifact
+          # nobody downloaded in three days is not going to be downloaded.
+          retention-days: 3
           if-no-files-found: error
 
   # ---------------------------------------------------------------------------

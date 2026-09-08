@@ -19,6 +19,9 @@ func (h *Handler) Routes() http.Handler {
 
 	mux.HandleFunc("GET /api/todos", h.handleListTodos)
 	mux.HandleFunc("POST /api/todos", h.handleCreateTodo)
+	// Registered before the {id} pattern for readability only: ServeMux picks
+	// the more specific literal path regardless of registration order.
+	mux.HandleFunc("GET /api/todos/stats", h.handleStats)
 	mux.HandleFunc("GET /api/todos/{id}", h.handleGetTodo)
 	mux.HandleFunc("PUT /api/todos/{id}", h.handleUpdateTodo)
 	mux.HandleFunc("DELETE /api/todos/{id}", h.handleDeleteTodo)
