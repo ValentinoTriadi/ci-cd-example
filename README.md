@@ -87,7 +87,7 @@ exactly one definition of "CI passed" and one definition of "deployed".
     └── nightly.yml                   scheduled full surface
 ```
 
-Three details worth copying:
+Four details worth copying:
 
 - **`ci-ok` / `pr-ready` gate jobs.** Branch protection points at one job that `needs:` everything
   else. Add a matrix leg and you never have to touch the protection rules.
@@ -95,6 +95,11 @@ Three details worth copying:
   so a deploy can never pick up a different image than the one that was scanned.
 - **Asymmetric concurrency.** PR and feature runs use `cancel-in-progress: true`; deploys use
   `false`, because cancelling a half-applied rollout is worse than queueing.
+- **No `permissions:` block in `_reusable-docker.yml`.** A called workflow may not request more than
+  its caller granted, so declaring permissions in the callee forces *every* caller to match the most
+  privileged one. Omitting it lets the job inherit: pull requests grant `contents: read` and pass
+  `upload-scan: false`, while the CD callers grant `packages: write` and `security-events: write` —
+  one workflow definition, least privilege at each call site.
 
 ## Branching model
 
@@ -207,12 +212,64 @@ gh api -X PUT repos/:owner/:repo/branches/main/protection \
 JSON
 ```
 
-**4. Actions permissions** — Settings → Actions → General → Workflow permissions: *Read repository
-contents and packages permissions*. The workflows request `packages: write` per job where needed;
-they never need a personal access token.
+**4. Actions permissions**
 
-**5. GHCR visibility** — packages are private on first publish. Make the package public (Package
-settings → Change visibility) if you want `docker pull` to work without authenticating.
+```bash
+gh api -X PUT repos/:owner/:repo/actions/permissions/workflow \
+  -f default_workflow_permissions=write -F can_approve_pull_request_reviews=false
+```
+
+**5. Seed the GHCR package once** — `GITHUB_TOKEN` can publish *versions* of a container package, but
+it cannot **create** one that does not exist yet. The first push fails with:
+
+```
+denied: installation not allowed to Create organization package
+```
+
+Create it once from your machine with a token that has `write:packages`, after which every workflow
+push works with no secrets at all:
+
+```bash
+gh auth refresh -h github.com -s write:packages,read:packages
+gh auth token | docker login ghcr.io -u "$(gh api user --jq .login)" --password-stdin
+
+make docker
+docker tag ghcr.io/valentinotriadi/ci-cd-example:local ghcr.io/valentinotriadi/ci-cd-example:seed
+docker push ghcr.io/valentinotriadi/ci-cd-example:seed
+```
+
+Then link the package to the repository and make it public (Package → Settings → *Manage Actions
+access* → add the repo with **Write**, and *Change visibility* → Public), so `docker pull` works
+without authenticating and the deploy jobs can pull what they just published.
+
+**6. Plan and visibility requirements** — three parts of this pipeline are unavailable on a
+**private** repository on the Free plan, and all three are free on a **public** one:
+
+| Feature | Needs |
+| --- | --- |
+| CodeQL and any SARIF upload (including the Trivy scan) | Public repo, or GitHub Advanced Security |
+| Dependency review | Public repo, or GHAS (the dependency graph on private repos) |
+| Environment protection rules — the production approval gate | Public repo, or a paid plan |
+
+On a private free repo you will see `Code scanning is not enabled for this repository` from CodeQL,
+and the environments API refuses required reviewers with *"ensure the billing plan supports the
+required reviewers protection rule"*. Private repos also bill Actions minutes, and the `macos-latest`
+matrix legs are billed at 10×.
+
+## Gotchas worth knowing
+
+- **`paths-ignore` and branch creation.** Creating a branch, or force-pushing a commit whose tree is
+  unchanged, produces no changed files, so a workflow with `paths-ignore` does not run at all.
+  Branching `develop` off `main` therefore does *not* deploy — which is usually what you want, but it
+  surprises people who expect the branch-creation push to fire CD.
+- **Dependabot pull requests run with a read-only token.** Any job that requests write permissions on
+  a Dependabot PR must be able to run without them. This is a second reason the reusable Docker
+  workflow inherits its permissions rather than declaring them.
+- **A skipped matrix job shows its raw name.** `Fast checks / Build (${{ matrix.goos }}/…)` in the
+  checks list is GitHub rendering a job it never expanded, not a templating bug.
+- **Actions are pinned to major tags here for readability.** `aquasecurity/trivy-action` publishes
+  `v`-prefixed tags (`v0.36.0`); getting that wrong fails the run at startup with `unable to resolve
+  action`, before any step executes.
 
 ## Making the deploys real
 
