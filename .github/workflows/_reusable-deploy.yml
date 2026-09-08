@@ -24,6 +24,10 @@ on:
         description: Git ref being deployed, for the deployment record.
         type: string
         default: ""
+    secrets:
+      GHCR_TOKEN:
+        description: Optional PAT with read:packages, to pull the image being deployed.
+        required: false
     outputs:
       url:
         description: The URL the deployment was recorded against.
@@ -76,7 +80,7 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}
 
       # In a real pipeline this hits the deployed URL. Here the stub deployed
       # nothing, so we run the very same image locally instead — which still

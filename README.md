@@ -8,8 +8,10 @@ and environment-gated deployments.
 
 > **Deploys are simulated.** `scripts/deploy.sh` prints the deployment it *would* perform and exits.
 > Everything around it — environments, approval gates, deployment records, image digests, smoke
-> tests — is real. That means the whole pipeline runs green with **zero secrets to configure**.
-> See [Making the deploys real](#making-the-deploys-real).
+> tests — is real. See [Making the deploys real](#making-the-deploys-real).
+>
+> The only credential the pipeline may need is `GHCR_TOKEN`, and only if your account will not let
+> `GITHUB_TOKEN` write the container package — see [Publishing to GHCR](#5-publishing-to-ghcr).
 
 ---
 
@@ -219,30 +221,51 @@ gh api -X PUT repos/:owner/:repo/actions/permissions/workflow \
   -f default_workflow_permissions=write -F can_approve_pull_request_reviews=false
 ```
 
-**5. Seed the GHCR package once** — `GITHUB_TOKEN` can publish *versions* of a container package, but
-it cannot **create** one that does not exist yet. The first push fails with:
+### 5. Publishing to GHCR
 
-```
-denied: installation not allowed to Create organization package
-```
+This is the fiddliest part of the setup, and the error messages walk you through it one denial at a
+time. `GITHUB_TOKEN` publishes package *versions* but cannot **create** a package, and a package it
+did not create has to be granted access explicitly:
 
-Create it once from your machine with a token that has `write:packages`, after which every workflow
-push works with no secrets at all:
+| Error | Meaning |
+| --- | --- |
+| `denied: ... not allowed to Create organization package` | The package does not exist. `GITHUB_TOKEN` cannot create it. |
+| `denied: ... not allowed to Read organization package` | It exists but is not linked to this repository. |
+| `denied: ... not allowed to Write organization package` | It is linked, but the repository's role is Read, not Write. |
+
+**Seed the package once** from your machine with a token that has `write:packages`:
 
 ```bash
 gh auth refresh -h github.com -s write:packages,read:packages
 gh auth token | docker login ghcr.io -u "$(gh api user --jq .login)" --password-stdin
 
 make docker
-docker tag ghcr.io/valentinotriadi/ci-cd-example:local ghcr.io/valentinotriadi/ci-cd-example:seed
-docker push ghcr.io/valentinotriadi/ci-cd-example:seed
+docker tag ghcr.io/<owner>/ci-cd-example:local ghcr.io/<owner>/ci-cd-example:seed
+docker push ghcr.io/<owner>/ci-cd-example:seed
 ```
 
-Then link the package to the repository and make it public (Package → Settings → *Manage Actions
-access* → add the repo with **Write**, and *Change visibility* → Public), so `docker pull` works
-without authenticating and the deploy jobs can pull what they just published.
+Then, at `https://github.com/users/<owner>/packages/container/ci-cd-example/settings`:
 
-**6. Plan and visibility requirements** — three parts of this pipeline are unavailable on a
+- **Manage Actions access** → add the repository → set its role to **Write** (the dropdown defaults
+  to Read, and Read is not enough to push).
+- **Change visibility** → Public, if you want `docker pull` to work unauthenticated.
+
+**If `GITHUB_TOKEN` still cannot write** — some accounts and org policies refuse it regardless of the
+above — fall back to a personal access token:
+
+```bash
+# github.com/settings/tokens/new  — classic token, scope: write:packages
+gh secret set GHCR_TOKEN
+```
+
+Every GHCR login in this repo reads `${{ secrets.GHCR_TOKEN || secrets.GITHUB_TOKEN }}`, so setting
+that one secret is the whole change; delete it and the workflows go back to `GITHUB_TOKEN`
+automatically. The callers pass it explicitly (`secrets: GHCR_TOKEN: ...`) rather than using
+`secrets: inherit`, so it is obvious which workflows can see it.
+
+### 6. Plan and visibility requirements
+
+Three parts of this pipeline are unavailable on a
 **private** repository on the Free plan, and all three are free on a **public** one:
 
 | Feature | Needs |
