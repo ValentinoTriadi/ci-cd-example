@@ -86,8 +86,14 @@ func (h *Handler) handleStats(w http.ResponseWriter, _ *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.store.Snapshot())
 }
 
-func (h *Handler) handleListTodos(w http.ResponseWriter, _ *http.Request) {
-	h.writeJSON(w, http.StatusOK, h.store.List())
+func (h *Handler) handleListTodos(w http.ResponseWriter, r *http.Request) {
+	done, err := doneFilter(r)
+	if err != nil {
+		h.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	h.writeJSON(w, http.StatusOK, h.store.Filter(done))
 }
 
 func (h *Handler) handleCreateTodo(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +185,27 @@ func decodeJSON(r *http.Request, dst any) error {
 		return errors.New("invalid JSON body: " + err.Error())
 	}
 	return nil
+}
+
+// doneFilter reads the optional ?done= parameter, returning nil when it is
+// absent. Only "true" and "false" are accepted; ParseBool would also take "1",
+// "t" and "TRUE", a wider surface than the endpoint documents.
+func doneFilter(r *http.Request) (*bool, error) {
+	query := r.URL.Query()
+	if !query.Has("done") {
+		return nil, nil
+	}
+
+	switch query.Get("done") {
+	case "true":
+		done := true
+		return &done, nil
+	case "false":
+		done := false
+		return &done, nil
+	default:
+		return nil, errors.New(`done must be "true" or "false"`)
+	}
 }
 
 func pathID(r *http.Request) (int64, error) {

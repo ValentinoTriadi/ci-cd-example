@@ -67,6 +67,58 @@ func TestListIsSortedByID(t *testing.T) {
 	}
 }
 
+func TestFilterByDone(t *testing.T) {
+	s := New()
+	for _, title := range []string{"a", "b", "c"} {
+		if _, err := s.Create(title); err != nil {
+			t.Fatalf("Create(%q) error = %v", title, err)
+		}
+	}
+	if _, err := s.Update(2, "b", true); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	done, pending := true, false
+
+	tests := []struct {
+		name    string
+		done    *bool
+		wantIDs []int64
+	}{
+		{name: "nil keeps everything", done: nil, wantIDs: []int64{1, 2, 3}},
+		{name: "true keeps completed", done: &done, wantIDs: []int64{2}},
+		{name: "false keeps pending", done: &pending, wantIDs: []int64{1, 3}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := s.Filter(tt.done)
+			if len(got) != len(tt.wantIDs) {
+				t.Fatalf("Filter() = %+v, want %d todos", got, len(tt.wantIDs))
+			}
+			for i, todo := range got {
+				if todo.ID != tt.wantIDs[i] {
+					t.Errorf("Filter()[%d].ID = %d, want %d", i, todo.ID, tt.wantIDs[i])
+				}
+			}
+		})
+	}
+}
+
+// TestFilterReturnsEmptyNotNil matters because the handler encodes the result
+// straight to JSON: a nil slice would serialise as null instead of [].
+func TestFilterReturnsEmptyNotNil(t *testing.T) {
+	done := true
+
+	got := New().Filter(&done)
+	if got == nil {
+		t.Fatal("Filter() on an empty store = nil, want an empty slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("Filter() on an empty store = %+v, want empty", got)
+	}
+}
+
 func TestUpdate(t *testing.T) {
 	s := New()
 	created, err := s.Create("draft")

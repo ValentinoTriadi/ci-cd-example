@@ -152,6 +152,78 @@ func TestTodoLifecycle(t *testing.T) {
 	}
 }
 
+// TestListTodosFilterByDone covers the ?done= query parameter. The store is
+// seeded through the API so the test exercises the same path a client does.
+func TestListTodosFilterByDone(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	for _, title := range []string{"pending one", "finished", "pending two"} {
+		if rec := do(t, srv, http.MethodPost, "/api/todos", `{"title":"`+title+`"}`); rec.Code != http.StatusCreated {
+			t.Fatalf("create %q status = %d, want 201 (body %s)", title, rec.Code, rec.Body)
+		}
+	}
+	if rec := do(t, srv, http.MethodPut, "/api/todos/2", `{"title":"finished","done":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want 200 (body %s)", rec.Code, rec.Body)
+	}
+
+	tests := []struct {
+		name    string
+		path    string
+		wantIDs []int64
+	}{
+		{name: "no parameter returns everything", path: "/api/todos", wantIDs: []int64{1, 2, 3}},
+		{name: "done=true returns completed", path: "/api/todos?done=true", wantIDs: []int64{2}},
+		{name: "done=false returns pending", path: "/api/todos?done=false", wantIDs: []int64{1, 3}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := do(t, srv, http.MethodGet, tt.path, "")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("GET %s status = %d, want 200 (body %s)", tt.path, rec.Code, rec.Body)
+			}
+
+			got := decodeBody[[]store.Todo](t, rec)
+			if len(got) != len(tt.wantIDs) {
+				t.Fatalf("GET %s returned %d todos, want %d", tt.path, len(got), len(tt.wantIDs))
+			}
+			for i, todo := range got {
+				if todo.ID != tt.wantIDs[i] {
+					t.Errorf("todo[%d].ID = %d, want %d", i, todo.ID, tt.wantIDs[i])
+				}
+			}
+		})
+	}
+
+	// A filter that matches nothing must still be an array, not null.
+	rec := do(t, srv, http.MethodDelete, "/api/todos/2", "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", rec.Code)
+	}
+	rec = do(t, srv, http.MethodGet, "/api/todos?done=true", "")
+	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+		t.Errorf("empty filtered list body = %q, want []", got)
+	}
+}
+
+// TestListTodosRejectsInvalidDone keeps the parameter strict: only the two
+// literals are accepted, so a typo fails loudly instead of silently listing
+// everything.
+func TestListTodosRejectsInvalidDone(t *testing.T) {
+	srv, _ := newTestServer(t)
+
+	for _, path := range []string{"/api/todos?done=maybe", "/api/todos?done=1", "/api/todos?done=TRUE", "/api/todos?done="} {
+		rec := do(t, srv, http.MethodGet, path, "")
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("GET %s status = %d, want 400 (body %s)", path, rec.Code, rec.Body)
+			continue
+		}
+		if got := decodeBody[map[string]string](t, rec); got["error"] == "" {
+			t.Errorf("GET %s body = %s, want an error message", path, rec.Body)
+		}
+	}
+}
+
 // TestStatsEndpoint also pins the routing precedence: /api/todos/stats must
 // win over /api/todos/{id} rather than being parsed as an id of "stats".
 func TestStatsEndpoint(t *testing.T) {

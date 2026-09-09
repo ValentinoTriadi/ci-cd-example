@@ -134,6 +134,7 @@ A single Go binary with no third-party dependencies.
 | `GET /version` | Build metadata injected via `-ldflags`. The release workflow asserts this matches the git tag. |
 | `GET /api/todos/stats` | Aggregate counts (total / done / pending), taken under a single lock. |
 | `GET/POST /api/todos`, `GET/PUT/DELETE /api/todos/{id}` | An in-memory CRUD resource, so the smoke test exercises a real write path. |
+| `GET /api/todos?done=true\|false` | The same list, filtered by completion state. Any other value is a 400. |
 
 ```
 cmd/server/          main + config (graceful shutdown, env parsing)

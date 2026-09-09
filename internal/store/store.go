@@ -84,11 +84,21 @@ func (s *Store) Get(id int64) (Todo, error) {
 
 // List returns every todo ordered by ID, so responses are deterministic.
 func (s *Store) List() []Todo {
+	return s.Filter(nil)
+}
+
+// Filter returns the todos whose done flag matches, ordered by ID. A nil done
+// means no filtering, so Filter(nil) is List. The result is always non-nil, so
+// callers can encode it as JSON and get [] rather than null.
+func (s *Store) Filter(done *bool) []Todo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	out := make([]Todo, 0, len(s.items))
 	for _, todo := range s.items {
+		if done != nil && todo.Done != *done {
+			continue
+		}
 		out = append(out, todo)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
